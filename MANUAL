@@ -1,0 +1,213 @@
+==========================================
+Abridged User's Manual of NANOHA ver.1.0.0
+==========================================
+
+Supported Operating System
+--------------------------
+macOS or Linux (x86 64-bit)
+
+
+Software Requirements
+---------------------
+perl			5.8 or later (64-bit)
+(Thread::Queue)		3.07 or later
+(List::Util)		1.54 or later
+ List::MoreUtils	0.31_01 or later
+ Number::AnyBase	1.60000 or later
+ Inline			0.56 or later
+ Inline::C		0.81 or later
+ Inline::CPP		0.80 or later
+spoa			3.4.0			https://github.com/rvaser/spoa/releases/tag/3.4.0
+cmake			3.2 or later		(required for spoa installation)
+
+Note: NANOHA requires Inline, Inline::C, Inline::CPP modules and spoa C++ libraries for XS codes.
+      If use pure perl codes instead, these modules and libraries are unnecessary. (but too slow)
+      Creating consensus sequences is also disabled. (Only extracting longest sequences is enabled.)
+
+
+Installation
+------------
+Move "nanoha.pl" to any directory in the PATH.
+
+Required Perl modules can be installed via cpan:
+```
+$ cpan
+> reload index
+> install List::MoreUtils Number::AnyBase Inline Inline::C Inline::CPP
+> q
+```
+
+Installation of spoa with shared libraries follows below (cmake required):
+```
+$ wget -O - https://github.com/rvaser/spoa/releases/download/3.4.0/spoa-v3.4.0.tar.gz | tar -xzf -
+$ cd spoa-v3.4.0
+$ PREFIX=/some/where
+$ mkdir build
+$ cd build
+$ cmake -DCMAKE_INSTALL_PREFIX=$PREFIX -DCMAKE_CXX_FLAGS="-fPIC -Wl,-rpath,$PREFIX/lib" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -Dspoa_build_executable=ON -Dspoa_use_simde_openmp=ON ..
+$ make
+$ make install
+```
+
+You can easily install cmake via apt or yum in the Linux system.
+In the macOS, MacPorts or Homebrew are helpful to install cmake.
+MacPorts	https://www.macports.org
+Homebrew	http://brew.sh
+
+XS codes are compiled the first time running NANOHA.
+Compiled binaries are put on either of '~/.Inline' or './_Inline' directories. 
+Making '~/.Inline' directory is recommended because it can be refferred from any where.
+
+Environmental variables below effect the compilation.
+CC		C compiler name or path
+CXX		C++ compiler name or path
+SPOA_INC	spoa include direcotry path
+SPOA_LIB	spoa library direcotry path
+
+Typical initial compilation procedure:
+```
+$ mkdir ~/.Inline
+$ export SPOA_INC=/some/where/include
+$ export SPOA_LIB=/some/where/lib
+$ nanoha.pl
+```
+
+
+Quick Start
+-----------
+General usage is as below:
+```
+$ nanoha.pl <command> [options] [input] [>output] [2>log]
+```
+
+If you omit the command, NANOHA outputs its version and available commands as below:
+```
+$ nanoha.pl 
+nanoha.pl ver.1.0.0
+
+Functions:
+  NANOHA is Network-based Assortment of Noisy On-target reads for High-accuracy Alignments.
+  This software assorts on-target PacBio/Nanopore reads such as target amplicon sequences.
+
+Usage:
+  nanoha.pl <command>
+
+Command:
+  assort	Assort sequence reads
+  sketch	Sketch out sequence reads
+  unify		Unify sequence reads in the same cluster
+```
+
+
+[sketch]
+```
+nanoha.pl sketch
+
+Functions:
+  Sketch out sequence reads under specified conditions.
+
+Usage:
+  nanoha.pl sketch [options] <STDIN|in1.fq> [in2.fq ...]
+
+Options:
+  -k INT 	Size of k-mer <5-15> [15]
+  -n INT 	Number of k-mer minimizers to be generated from each read <1-255> [10]
+  -o STR 	Output file prefix [nanoha]
+  -p INT 	Number of parallel worker threads <1-> [1]
+  -s		Use strand-specific sequence reads
+  -u INT 	Maximum amount of sequence reads to be loaded <1-4294967295> [4294967295]
+  -w		Use 2-byte line feed code (CR+LF) for input files
+```
+
+First of all, sketching out input sequence reads.
+This command generates k-mer minimizers and converts input sequence reads to the binaries.
+Three files with .nss, .nsr and .nsi extensions are generated.
+
+Examples:
+```
+$ nanoha.pl sketch -p 4 -k 15 -n 10 -o example input.fastq
+```
+
+Note: Compressed FASTQ files can be inputted with pipe as below:
+```
+$ gunzip -c input.fastq.gz | nanoha.pl sketch -p 4 -k 15 -n 10 -o example
+```
+
+
+[assort]
+```
+nanoha.pl assort
+
+Functions:
+  Assort sequence reads under specified conditions.
+
+Usage:
+  nanoha.pl assort [options] <prefix>
+
+Options:
+  -p INT 	Number of parallel worker threads <1-> [1]
+  -t INT 	Number of trials per worker thread for clustering sequence reads <1-> [1]
+  -w INT 	Word size index for calculating LLCS in Perl XS code <0-3>
+```
+
+Second, creating sequence clusters and assort sequence reads with network-based algorithm.
+Each edge weight is calauleted from MinHash method and length of longest common subsequences (LLCS).
+Sequence clusters are generated via commuity detection method using excess modularity density.
+Cutoff depth (cluster size) is calculated by Otsu's method.
+Two files with .nsc and .nso extensions are generated.
+
+Examples:
+```
+$ nanoha.pl assort -p 4 -w 0 example
+```
+
+Note: -w option specifies word size index for LLCS calculation.
+      -w 0 uses 64-bit blocks (any 64-bit x86 CPUs)
+      -w 1 uses 128-bit blocks on SSE4.1 (2nd gen. of Intel Core2 series or later)
+      -w 2 uses 256-bit blocks on AVX2 (4th gen. of Intel Core i series or later)
+      -w 3 uses 512-bit blocks on AVX-512 (10th gen. of Intel Core i series or later)
+      When sequence length is long enough, bigger word size index is faster.
+
+
+[unify]
+```
+nanoha.pl unify
+
+Functions:
+  Unify sequence reads in the same cluster under specified conditions.
+
+Usage:
+  nanoha.pl unify [options] <prefix> [>out.fa]
+
+Options:
+  -a INT 	Maximum amount of sequence reads to be aligned <1-65535> [65535]
+  -c STR 	Alignment method to generate consensus sequence reads <local|global|semi-global>
+  -d INT 	Cutoff depth (cluster size) to eliminate small clusters <1->
+  -e INT 	Gap extension penalty <1-> [1]
+  -g INT 	Gap opening penalty <1-> [3]
+  -m INT 	Match award <1-> [5]
+  -n INT 	Mismatch penalty <0-> [4]
+  -p INT 	Number of parallel worker threads <1-> [1]
+  -q FLOAT 	Cutoff false discovery rate to eliminate strand-biased clusters <0-1> [0.001]
+```
+
+Finally, creating a consensus sequence form each sequence cluster.
+
+Examples:
+```
+$ nanoha.pl unify -p 4 -c local example >unified.fasta
+```
+
+Note: Recommended cutoff depth embedded in .nsc file is used by default.
+
+
+License
+-------
+NANOHA is released under the MIT License.
+See also LICENSE.
+
+
+Bug Reporting
+-------------
+If you find bugs, please let me know.
+Email: suzuki.hikoyu@gmail.com
