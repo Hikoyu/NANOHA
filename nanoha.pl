@@ -11,7 +11,7 @@ use threads;
 # ソフトウェアを定義
 ### 編集範囲 開始 ###
 my $software = "nanoha.pl";	# ソフトウェアの名前
-my $version = "ver.1.0.0";	# ソフトウェアのバージョン
+my $version = "ver.1.0.1";	# ソフトウェアのバージョン
 my $note = "NANOHA is Network-based Assortment of Noisy On-target reads for High-accuracy Alignments.\n  This software assorts on-target PacBio/Nanopore reads such as target amplicon sequences.";	# ソフトウェアの説明
 my $usage = "<required items> [optional items]";	# ソフトウェアの使用法 (コマンド非使用ソフトウェアの時に有効)
 ### 編集範囲 終了 ###
@@ -303,7 +303,7 @@ sub body {
 		my $read_seq = uc($line);
 		
 		# ACGT以外の塩基を除去
-		$read_seq =~ s/[^ACGT]//;
+		$read_seq =~ s/[^ACGT]//g;
 		
 		# リード長を取得
 		my $read_len = length($read_seq);
