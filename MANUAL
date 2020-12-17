@@ -1,5 +1,5 @@
 ==========================================
-Abridged User's Manual of NANOHA ver.1.0.1
+Abridged User's Manual of NANOHA ver.1.1.0
 ==========================================
 
 Supported Operating System
@@ -83,7 +83,7 @@ $ nanoha.pl <command> [options] [input] [>output] [2>log]
 If you omit the command, NANOHA outputs its version and available commands as below:
 ```
 $ nanoha.pl 
-nanoha.pl ver.1.0.0
+nanoha.pl ver.1.1.0
 
 Functions:
   NANOHA is Network-based Assortment of Noisy On-target reads for High-accuracy Alignments.
@@ -94,6 +94,7 @@ Usage:
 
 Command:
   assort	Assort sequence reads
+  convert	Convert sequence reads from FASTA format to FASTQ format
   sketch	Sketch out sequence reads
   unify		Unify sequence reads in the same cluster
 ```
@@ -110,6 +111,8 @@ Usage:
   nanoha.pl sketch [options] <STDIN|in1.fq> [in2.fq ...]
 
 Options:
+  -3 INT 	Number of bases trimmed from 3' (right) end of reads <0-> [0]
+  -5 INT 	Number of bases trimmed from 5' (left) end of reads <0-> [0]
   -k INT 	Size of k-mer <5-15> [15]
   -n INT 	Number of k-mer minimizers to be generated from each read <1-255> [10]
   -o STR 	Output file prefix [nanoha]
@@ -199,6 +202,29 @@ $ nanoha.pl unify -p 4 -c local example >unified.fasta
 ```
 
 Note: Recommended cutoff depth embedded in .nsc file is used by default.
+
+
+[convert]
+```
+nanoha.pl convert
+
+Functions:
+  Convert sequence reads from FASTA format to FASTQ format under specified conditions.
+
+Usage:
+  nanoha.pl convert [options] <STDIN|in1.fa> [in2.fa ...] [>out.fq]
+
+Options:
+  -w		Use 2-byte line feed code (CR+LF) for input files
+```
+
+Converting sequence reads from FASTA format to FASTQ format with pseudo quality scores.
+This command is used for inputting FASTA format sequence reads to sketch command.
+
+Examples:
+```
+$ nanoha.pl convert input.fasta | nanoha.pl sketch -p 4 -k 15 -n 10 -o example
+```
 
 
 License

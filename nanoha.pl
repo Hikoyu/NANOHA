@@ -11,7 +11,7 @@ use threads;
 # ソフトウェアを定義
 ### 編集範囲 開始 ###
 my $software = "nanoha.pl";	# ソフトウェアの名前
-my $version = "ver.1.0.1";	# ソフトウェアのバージョン
+my $version = "ver.1.1.0";	# ソフトウェアのバージョン
 my $note = "NANOHA is Network-based Assortment of Noisy On-target reads for High-accuracy Alignments.\n  This software assorts on-target PacBio/Nanopore reads such as target amplicon sequences.";	# ソフトウェアの説明
 my $usage = "<required items> [optional items]";	# ソフトウェアの使用法 (コマンド非使用ソフトウェアの時に有効)
 ### 編集範囲 終了 ###
@@ -22,6 +22,7 @@ my %command;
 $command{"sketch"} = "Sketch out sequence reads";
 $command{"assort"} = "Assort sequence reads";
 $command{"unify"} = "\tUnify sequence reads in the same cluster";
+$command{"convert"} = "Convert sequence reads from FASTA format to FASTQ format";
 # コマンドを追加
 ### 編集範囲 終了 ###
 my @command_list = sort(keys(%command));
@@ -153,6 +154,53 @@ sub caution {
 }
 
 ### 編集範囲 開始 ###
+## ここからconvertコマンドのパッケージ ##
+package convert;
+
+# コマンドとオプションを定義
+sub define {
+	$note = "Convert sequence reads from FASTA format to FASTQ format under specified conditions.";
+	$usage = "<STDIN|in1.fa> [in2.fa ...] [>out.fq]";
+	$option{"w"} = "\tUse 2-byte line feed code (CR+LF) for input files";
+	return(1);
+}
+
+# コマンド本体
+sub body {
+	# 入力ファイルを確認
+	&exception::error("input file not specified") unless @ARGV or -p STDIN;
+	&common::check_files(\@ARGV);
+	
+	# 変数を宣言
+	my $read_id = undef;
+	my $read_seq = "";
+	
+	# 入力の改行コードを一時的に変更 (-w指定時)
+	local $/ = "\r\n" if $opt{"w"};
+	
+	# FASTAファイルを読み込みながら処理
+	print STDERR "Converting sequence reads from FASTA format to FASTQ format...";
+	while (my $line = <>) {
+		# 改行コードを除去
+		chomp($line);
+		
+		# ヘッダー行でない場合はシーケンスを追加
+		$read_seq .= $line if $line !~ /^>/;
+		
+		# リードIDが未定義でなくヘッダー行またはファイル末に到達した場合はリードシーケンスがnullでないか確認しFASTQ形式で出力してリードIDとともにリセット
+		$read_seq and print join("\n", "@" . $read_id, $read_seq, "+", "I" x length($read_seq)), "\n" and ($read_id, $read_seq) = (undef, "") or &exception::error("null sequence found", $ARGV) if defined($read_id) and ($line =~ /^>/ or eof);
+		
+		# ヘッダー行の場合はリードIDを取得してnullでないか確認
+		$read_id = substr($line, 1) or &exception::error("null header found", $ARGV) if $line =~ /^>/;
+		
+		# ファイル末に達した場合は読み込み行数をリセット
+		$. = 0;
+	}
+	print STDERR "completed\n";
+	
+	return(1);
+}
+
 ## ここからsketchコマンドのパッケージ ##
 package sketch;
 
@@ -165,6 +213,8 @@ sub define {
 	$option{"k INT "} = "Size of k-mer <5-15> [15]";
 	$option{"n INT "} = "Number of k-mer minimizers to be generated from each read <1-255> [10]";
 	$option{"u INT "} = "Maximum amount of sequence reads to be loaded <1-" . main::max_num_reads . "> [" . main::max_num_reads . "]";
+	$option{"5 INT "} = "Number of bases trimmed from 5' (left) end of reads <0-> [0]";
+	$option{"3 INT "} = "Number of bases trimmed from 3' (right) end of reads <0-> [0]";
 	$option{"s"} = "\tUse strand-specific sequence reads";
 	$option{"w"} = "\tUse 2-byte line feed code (CR+LF) for input files";
 	# オプションを追加
@@ -178,20 +228,25 @@ sub body {
 	&exception::error("specify INT 7-15: -k $opt{k}") if $opt{"k"} !~ /^\d+$/ or $opt{"k"} < 7 or $opt{"k"} > 15;
 	&exception::error("specify INT 1-255: -n $opt{n}") if $opt{"n"} !~ /^\d+$/ or $opt{"n"} < 1 or $opt{"n"} > 255;
 	&exception::error("specify INT 1-" . main::max_num_reads . ": -u $opt{u}") if $opt{"u"} !~ /^\d+$/ or $opt{"u"} == 0 or $opt{"u"} > main::max_num_reads;
+	&exception::error("specify INT >= 0: -5 $opt{5}") if $opt{"5"} !~ /^\d+$/;
+	&exception::error("specify INT >= 0: -3 $opt{3}") if $opt{"3"} !~ /^\d+$/;
 	&exception::caution("even k-mer size not recommended: -k $opt{k}") unless $opt{"k"} & 0x01;
 	
 	# 入力ファイルを確認
 	&exception::error("input file not specified") unless @ARGV or -p STDIN;
 	&common::check_files(\@ARGV);
 	
-	# プロセスIDとプログラム開始時刻をファイルヘッダーとする
-	my $file_header = pack("NN", $$, $^T);
+	# 共有変数を定義
+	my $seq_index : shared;
+	
+	# プロセスIDとプログラム開始時刻をファイルヘッダーとしてシーケンスインデックスに登録
+	$seq_index = pack("NN", 0, 0);
 	
 	# Nanoha Sequence Read (NSR) ファイルを作成
 	open(NSR, ">", "$opt{o}.nsr") or &exception::error("failed to make file: $opt{o}.nsr");
 	
 	# ファイルヘッダーをバイナリ形式でNSRファイルに出力
-	print NSR $file_header;
+	print NSR $seq_index;
 	
 	# 変数を宣言
 	my @worker_thread = ();
@@ -242,13 +297,6 @@ sub body {
 		## ここまでワーカースレッドの処理 ##
 	}
 	
-	# 共有変数を定義
-	my $seq_index : shared;
-	$seq_index = $file_header;
-	
-	# NSRファイルのファイルポインタの位置をシーケンスインデックスに登録
-	vec($seq_index, 1, 64) = tell(NSR);
-	
 	# データストリームスレッドを作成
 	## ここからデータストリームスレッドの処理 ##
 	$worker_thread[$opt{"p"}] = threads::async {
@@ -259,18 +307,18 @@ sub body {
 		open(NSS, ">", "$opt{o}.nss") or &exception::error("failed to make file: $opt{o}.nss");
 		
 		# ファイルヘッダーをバイナリ形式でNSSファイルに出力
-		print NSS $file_header;
+		print NSS $seq_index;
 		
 		# k-merサイズ及びストランド特異性フラグとminimizerの生成個数をバイナリ形式でNSSファイルに出力
 		print NSS pack("CC", !!$opt{"s"} << 4 | $opt{"k"}, $opt{"n"});
 		
+		# 変数を宣言
+		my $seq_sketch_index = "";
+		
 		# 出力キューを読み込みながら処理
 		while (defined(my $dat = $output->dequeue)) {
-			# 共有変数をロック
-			lock($seq_index);
-			
-			# NSSファイルのファイルポインタの位置をシーケンスインデックスに登録
-			vec($seq_index, vec($dat, 0, 32) * 2, 64) = tell(NSS);
+			# NSSファイルのファイルポインタの位置をシーケンススケッチインデックスに登録
+			vec($seq_sketch_index, vec($dat, 0, 32) * 2, 64) = tell(NSS);
 			
 			# 各minimizerとそのカウント数をバイナリ形式でNSSファイルに出力
 			print NSS substr($dat, 4);
@@ -279,6 +327,9 @@ sub body {
 		# NSSファイルを閉じる
 		close(NSS);
 		
+		# シーケンススケッチインデックスをシーケンスインデックスに統合
+		$seq_index |= $seq_sketch_index;
+		
 		# スレッドを終了
 		return(1);
 	};
@@ -286,6 +337,10 @@ sub body {
 	
 	# 変数を宣言
 	my $read_id = 0;
+	my $seq_read_index = "";
+	
+	# NSRファイルのファイルポインタの位置をシーケンスリードインデックスに登録
+	vec($seq_read_index, 1, 64) = tell(NSR);
 	
 	# 入力の改行コードを一時的に変更 (-w指定時)
 	local $/ = "\r\n" if $opt{"w"};
@@ -299,8 +354,8 @@ sub body {
 		# 読み込み行がシーケンス行以外の場合は以下の処理をスキップ
 		next if $. % 4 != 2;
 		
-		# リードシーケンスを大文字に変換
-		my $read_seq = uc($line);
+		# リードシーケンスを大文字に変換しリード両端を指定した長さだけトリミングしてシーケンスが消失した場合は以下の処理をスキップ
+		my $read_seq = substr(uc($line), $opt{"5"}, length($line) - $opt{"5"} - $opt{"3"}) or next;
 		
 		# ACGT以外の塩基を除去
 		$read_seq =~ s/[^ACGT]//g;
@@ -326,11 +381,8 @@ sub body {
 		# リード長とリードシーケンスをバイナリ形式でNSRファイルに出力
 		print NSR pack("Nb*", $read_len, $read_seq);
 		
-		# 共有変数をロック
-		lock($seq_index);
-		
 		# NSRファイルのファイルポインタの位置をシーケンスインデックスに登録
-		vec($seq_index, $read_id * 2 + 1, 64) = tell(NSR);
+		vec($seq_read_index, $read_id * 2 + 1, 64) = tell(NSR);
 		
 		# リードIDが上限値に達した場合、読み込みを終了
 		last if $read_id == $opt{"u"};
@@ -338,6 +390,9 @@ sub body {
 	
 	# NSRファイルを閉じる
 	close(NSR);
+	
+	# シーケンスリードインデックスをシーケンスインデックスに統合
+	$seq_index |= $seq_read_index;
 	
 	# 入力キューを終了
 	$input->end;
