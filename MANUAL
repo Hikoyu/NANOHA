@@ -1,5 +1,5 @@
 ==========================================
-Abridged User's Manual of NANOHA ver.1.1.0
+Abridged User's Manual of NANOHA ver.1.2.0
 ==========================================
 
 Supported Operating System
@@ -83,7 +83,7 @@ $ nanoha.pl <command> [options] [input] [>output] [2>log]
 If you omit the command, NANOHA outputs its version and available commands as below:
 ```
 $ nanoha.pl 
-nanoha.pl ver.1.1.0
+nanoha.pl ver.1.2.0
 
 Functions:
   NANOHA is Network-based Assortment of Noisy On-target reads for High-accuracy Alignments.
@@ -111,10 +111,10 @@ Usage:
   nanoha.pl sketch [options] <STDIN|in1.fq> [in2.fq ...]
 
 Options:
-  -3 INT 	Number of bases trimmed from 3' (right) end of reads <0-> [0]
-  -5 INT 	Number of bases trimmed from 5' (left) end of reads <0-> [0]
+  -3 INT 	Number of bases trimmed from 3' (right) end of each sequence read <0-> [0]
+  -5 INT 	Number of bases trimmed from 5' (left) end of each sequence read <0-> [0]
   -k INT 	Size of k-mer <5-15> [15]
-  -n INT 	Number of k-mer minimizers to be generated from each read <1-255> [10]
+  -n INT 	Number of k-mer minimizers to be generated from each sequence read <1-255> [10]
   -o STR 	Output file prefix [nanoha]
   -p INT 	Number of parallel worker threads <1-> [1]
   -s		Use strand-specific sequence reads
@@ -148,6 +148,7 @@ Usage:
   nanoha.pl assort [options] <prefix>
 
 Options:
+  -m INT 	Maximum number of k-mer minimizers to be used from each sequence read <1-255> [255]
   -p INT 	Number of parallel worker threads <1-> [1]
   -t INT 	Number of trials per worker thread for clustering sequence reads <1-> [1]
   -w INT 	Word size index for calculating LLCS in Perl XS code <0-3>

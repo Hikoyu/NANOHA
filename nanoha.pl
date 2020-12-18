@@ -11,7 +11,7 @@ use threads;
 # ソフトウェアを定義
 ### 編集範囲 開始 ###
 my $software = "nanoha.pl";	# ソフトウェアの名前
-my $version = "ver.1.1.0";	# ソフトウェアのバージョン
+my $version = "ver.1.2.0";	# ソフトウェアのバージョン
 my $note = "NANOHA is Network-based Assortment of Noisy On-target reads for High-accuracy Alignments.\n  This software assorts on-target PacBio/Nanopore reads such as target amplicon sequences.";	# ソフトウェアの説明
 my $usage = "<required items> [optional items]";	# ソフトウェアの使用法 (コマンド非使用ソフトウェアの時に有効)
 ### 編集範囲 終了 ###
@@ -211,10 +211,10 @@ sub define {
 	$option{"o STR "} = "Output file prefix [nanoha]";
 	$option{"p INT "} = "Number of parallel worker threads <1-> [1]";
 	$option{"k INT "} = "Size of k-mer <5-15> [15]";
-	$option{"n INT "} = "Number of k-mer minimizers to be generated from each read <1-255> [10]";
+	$option{"n INT "} = "Number of k-mer minimizers to be generated from each sequence read <1-255> [10]";
 	$option{"u INT "} = "Maximum amount of sequence reads to be loaded <1-" . main::max_num_reads . "> [" . main::max_num_reads . "]";
-	$option{"5 INT "} = "Number of bases trimmed from 5' (left) end of reads <0-> [0]";
-	$option{"3 INT "} = "Number of bases trimmed from 3' (right) end of reads <0-> [0]";
+	$option{"5 INT "} = "Number of bases trimmed from 5' (left) end of each sequence read <0-> [0]";
+	$option{"3 INT "} = "Number of bases trimmed from 3' (right) end of each sequence read <0-> [0]";
 	$option{"s"} = "\tUse strand-specific sequence reads";
 	$option{"w"} = "\tUse 2-byte line feed code (CR+LF) for input files";
 	# オプションを追加
@@ -433,6 +433,7 @@ sub define {
 	$usage = "<prefix>";
 	$option{"p INT "} = "Number of parallel worker threads <1-> [1]";
 	$option{"t INT "} = "Number of trials per worker thread for clustering sequence reads <1-> [1]";
+	$option{"m INT "} = "Maximum number of k-mer minimizers to be used from each sequence read <1-255> [255]";
 	$option{"w INT "} = "Word size index for calculating LLCS in Perl XS code <0-3>";
 	# オプションを追加
 	return(1);
@@ -443,6 +444,7 @@ sub body {
 	# 指定されたオプションを確認
 	&exception::error("specify INT >= 1: -p $opt{p}") if $opt{"p"} !~ /^\d+$/ or $opt{"p"} < 1;
 	&exception::error("specify INT >= 1: -t $opt{t}") if $opt{"t"} !~ /^\d+$/ or $opt{"t"} < 1;
+	&exception::error("specify INT 1-255: -m $opt{m}") if $opt{"m"} !~ /^\d+$/ or $opt{"m"} < 1 or $opt{"m"} > 255;
 	&exception::error("specify INT 0-3: -w $opt{w}") if defined($opt{"w"}) and ($opt{"w"} !~ /^\d+$/ or $opt{"w"} < 0 or $opt{"w"} > 3);
 	
 	# LLCSの計算エンジンを表示
@@ -481,8 +483,8 @@ sub body {
 	# ストランド特異性フラグを取得
 	my $strand_speicificity = vec($info, 17, 4);
 	
-	# minimizerの生成個数を取得
-	my $num_minimizers = vec($info, 9, 8);
+	# minimizerの使用個数を定義
+	my $num_minimizers = List::Util::min(vec($info, 9, 8), $opt{"m"});
 	
 	# 変数を宣言
 	my @minimizer_groups = ();
@@ -496,7 +498,7 @@ sub body {
 		# NSSファイルのファイルポインタをシーケンススケッチインデックスの位置にセット
 		seek(NSS, $seq_sketch_index, 0);
 		
-		# minimizerの生成個数だけ処理
+		# minimizerの使用個数分だけ処理
 		for (my $i = 0;$i < $num_minimizers;$i++) {
 			# NSSファイルから6バイト読み込む
 			read(NSS, my $minimizer, 6);
@@ -514,7 +516,7 @@ sub body {
 	# 変数を宣言
 	my @edge_list = map {{}} 0..$read_id;
 	
-	# minimizerの生成個数だけ処理
+	# minimizerの使用個数分だけ処理
 	print STDERR "Calculating Jaccard similarities based on MinHash...";
 	for (my $i = 0;$i < @minimizer_groups;$i++) {
 		# 各minimizerグループ内の各リード間にエッジを定義して重みを加算
