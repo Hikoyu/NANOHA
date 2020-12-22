@@ -11,7 +11,7 @@ use threads;
 # ソフトウェアを定義
 ### 編集範囲 開始 ###
 my $software = "nanoha.pl";	# ソフトウェアの名前
-my $version = "ver.1.2.0";	# ソフトウェアのバージョン
+my $version = "ver.1.3.0";	# ソフトウェアのバージョン
 my $note = "NANOHA is Network-based Assortment of Noisy On-target reads for High-accuracy Alignments.\n  This software assorts on-target PacBio/Nanopore reads such as target amplicon sequences.";	# ソフトウェアの説明
 my $usage = "<required items> [optional items]";	# ソフトウェアの使用法 (コマンド非使用ソフトウェアの時に有効)
 ### 編集範囲 終了 ###
@@ -256,7 +256,7 @@ sub body {
 	my $input = Thread::Queue->new;
 	my $output = Thread::Queue->new;
 	
-	# 入出力のキューの要素数上限を定義
+	# 入出力キューの要素数上限を定義
 	$input->limit = $opt{"p"};
 	$output->limit = $opt{"p"};
 	
@@ -474,7 +474,6 @@ sub body {
 	open(NSS, "<", "$input_prefix.nss") or &exception::error("failed to open file: $input_prefix.nss");
 	
 	# NSSファイルを先頭から10バイト読み込む
-	print STDERR "Loading sequence sketches...";
 	read(NSS, my $info, 10);
 	
 	# ファイルヘッダーの一致を確認
@@ -491,21 +490,19 @@ sub body {
 	my $read_id = 0;
 	
 	# 各リードについてシーケンススケッチインデックスを取得しながら処理
+	print STDERR "Loading sequence sketches...";
 	while (my $seq_sketch_index = vec($seq_index, ($read_id + 1) * 2, 64)) {
+		# 変数を宣言
+		my $minimizer = "";
+		
 		# リードIDを更新
 		$read_id++;
 		
 		# NSSファイルのファイルポインタをシーケンススケッチインデックスの位置にセット
 		seek(NSS, $seq_sketch_index, 0);
 		
-		# minimizerの使用個数分だけ処理
-		for (my $i = 0;$i < $num_minimizers;$i++) {
-			# NSSファイルから6バイト読み込む
-			read(NSS, my $minimizer, 6);
-			
-			# 読み込んだminimizerグループにリードIDを追加
-			push(@{$minimizer_groups[$i]->{$minimizer}}, $read_id);
-		}
+		# minimizerの使用個数分だけNSSファイルから6バイト読み込みminimizerグループにリードIDをシリアライズして追加
+		read(NSS, $minimizer, 6) and $minimizer_groups[$_]->{$minimizer} .= pack("N", $read_id) foreach 0..$num_minimizers - 1;
 	}
 	print STDERR "completed\n";
 	
@@ -513,35 +510,78 @@ sub body {
 	close(NSS);
 	
 	### MinHash法に基づくリード間のJaccard類似度の算出 ###
-	# 変数を宣言
-	my @edge_list = map {{}} 0..$read_id;
-	
-	# minimizerの使用個数分だけ処理
-	print STDERR "Calculating Jaccard similarities based on MinHash...";
-	for (my $i = 0;$i < @minimizer_groups;$i++) {
-		# 各minimizerグループ内の各リード間にエッジを定義して重みを加算
-		foreach my $minimizer_group (values(%{$minimizer_groups[$i]})) {
-			@{$edge_list[$_]}{@{$minimizer_group}} = map {defined ? $_ + 1 : 1} @{$edge_list[$_]}{@{$minimizer_group}} foreach @{$minimizer_group};
-		}
-	}
-	
-	# 自己ループを削除
-	delete($edge_list[$_]->{$_}) foreach 1..$read_id;
-	print STDERR "completed\n";
-	
-	### LLCSに基づくリード間のJaccard類似度の修正 ###
-	# 追加ヌル文字数を算出
-	my $additional_nulls = defined($opt{"w"}) ? (0x10 << $opt{"w"}) - 1 : 0x0F;
+	# 共有変数を定義
+	my @edge_list : shared;
+	@edge_list = ("") x ($read_id + 1);
 	
 	# 変数を宣言
 	my @worker_thread = ();
 	my $num_error_threads = 0;
 	
+	# 入力キューを作成
+	my $queue = Thread::Queue->new;
+	
+	# 入力キューの要素数上限を定義
+	$queue->limit = $opt{"p"};
+	
+	# 指定されたワーカースレッド数で並列処理
+	print STDERR "Calculating Jaccard similarities based on MinHash...";
+	for (my $thread_id = 0;$thread_id < $opt{"p"};$thread_id++) {
+		## ここからワーカースレッドの処理 ##
+		$worker_thread[$thread_id] = threads::async {
+			# このスレッドのみを終了可能に変更
+			threads->set_thread_exit_only(1);
+			
+			# 入力キューを読み込みながら処理
+			while (defined(my $dat = $queue->dequeue)) {
+				# minimizerグループをデシリアライズ
+				my @minimizer_group = unpack("N*", $dat);
+				
+				# minimizerグループ内の各リードについて処理
+				while (my $read_id = shift(@minimizer_group)) {
+					# エッジをデシリアライズして取得
+					my %edges = unpack("(NC)*", $edge_list[$read_id]);
+					
+					# エッジの重みを加算
+					$edges{$_}++ foreach @minimizer_group;
+					
+					# シリアライズしてエッジリストに登録
+					$edge_list[$read_id] = pack("(NC)*", %edges);
+				}
+			}
+			
+			# スレッドを終了
+			return(1);
+		};
+		## ここまでワーカースレッドの処理 ##
+	}
+	
+	# minimizerの使用個数分だけ処理
+	while (my $minimizer_group = shift(@minimizer_groups)) {
+		# 各minimizerグループについて実行中のスレッド数が指定値と一致している場合はグループ内のリードIDをシリアライズしたまま入力キューに追加
+		threads->list(threads::running) == $opt{"p"} and $queue->enqueue($_) foreach values(%{$minimizer_group});
+	}
+	
+	# 入力キューを終了
+	$queue->end;
+	
+	# 並列処理の各ワーカースレッドが終了するまで待機
+	$worker_thread[$_]->join or $num_error_threads++ foreach 0..$opt{"p"} - 1;
+	
+	# 異常終了したワーカースレッド数を確認
+	print STDERR "aborted\n" and &exception::error("$num_error_threads worker thread" . ($num_error_threads > 1 ? "s" : "") . " abnormally exited") if $num_error_threads;
+	print STDERR "completed\n";
+	
+	### LLCSに基づくリード間のJaccard類似度の算出 ###
+	# 追加ヌル文字数を算出
+	my $additional_nulls = defined($opt{"w"}) ? (0x10 << $opt{"w"}) - 1 : 0x0F;
+	
+	# 変数を宣言
 	# 入出力キューを作成
 	my $input = Thread::Queue->new;
 	my $output = Thread::Queue->new;
 	
-	# 入出力のキューの要素数上限を定義
+	# 入力キューの要素数上限を定義
 	$input->limit = $opt{"p"};
 	
 	# 指定されたワーカースレッド数で並列処理
@@ -592,10 +632,10 @@ sub body {
 				}
 				
 				# LLCSに基づくJaccard類似度を算出
-				my @LLCS_Jaccard_similarity = &calc_LLCS_Jaccard_similarities(\@read_seqs, \@read_lens, $strand_speicificity, $opt{"w"});
+				my @LLCS_Jaccard_similarities = map {$_ * 127} &calc_LLCS_Jaccard_similarities(\@read_seqs, \@read_lens, $strand_speicificity, $opt{"w"});
 				
 				# リードIDとLLCSに基づくJaccard類似度をシリアライズして出力キューに追加
-				$output->enqueue(pack("N(NF)*", shift(@read_ids), List::MoreUtils::mesh(@read_ids, @LLCS_Jaccard_similarity)));
+				$output->enqueue(pack("N(Nc)*", shift(@read_ids), List::MoreUtils::mesh(@read_ids, @LLCS_Jaccard_similarities)));
 			}
 			
 			# NSRファイルを閉じる
@@ -607,8 +647,8 @@ sub body {
 		## ここまでワーカースレッドの処理 ##
 	}
 	
-	# 各リードについて実行中のスレッド数が指定値と一致している場合は自身のリードID及びエッジリストに登録されているリードIDうち自身のリードIDよりも大きいものをシリアライズして入力キューに追加
-	threads->list(threads::running) == $opt{"p"} and $input->enqueue(pack("N*", $_, List::Util::pairkeys(List::Util::pairgrep {$a > $_} %{$edge_list[$_]}))) foreach 1..$read_id;
+	# 各リードについて実行中のスレッド数が指定値と一致している場合は自身のリードID及びエッジリストに登録されているリードIDをシリアライズして入力キューに追加
+	threads->list(threads::running) == $opt{"p"} and $input->enqueue(pack("N*", $_, unpack("(Nx)*", $edge_list[$_]))) foreach 1..$read_id;
 	
 	# 入力キューを終了
 	$input->end;
@@ -621,21 +661,26 @@ sub body {
 	
 	# 異常終了したワーカースレッド数を確認
 	print STDERR "aborted\n" and &exception::error("$num_error_threads worker thread" . ($num_error_threads > 1 ? "s" : "") . " abnormally exited") if $num_error_threads;
+	print STDERR "completed\n";
 	
 	# 変数を宣言
-	my @LLCS_Jaccard_similarity = ();
+	my @LLCS_Jaccard_similarities = ();
 	
-	# 出力キューを読み込みながら処理
-	while (defined(my $dat = $output->dequeue)) {
-		# LLCSに基づくJaccard類似度をデシリアライズして登録
-		$LLCS_Jaccard_similarity[vec($dat, 0, 32)] = {unpack("x4(NF)*", $dat)};
+	# 出力キューからLLCSに基づくJaccard類似度を読み込み登録
+	print STDERR "Modifying the weight of each edge...";
+	while (defined(my $dat = $output->dequeue)) {$LLCS_Jaccard_similarities[vec($dat, 0, 32)] = substr($dat, 4);}
+	
+	# 各リードについて処理
+	for (my $i = 1;$i <= $read_id;$i++) {
+		# LLCSに基づくJaccard類似度をデシリアライズ
+		my %LLCS_Jaccard_similarity = unpack("(Nc)*", $LLCS_Jaccard_similarities[$i]);
+		
+		# エッジの重みを修正して登録
+		$edge_list[$i] = pack("(Nc)*", List::Util::pairmap {$a => $LLCS_Jaccard_similarity{$a} * $b / $num_minimizers} unpack("(NC)*", $edge_list[$i]));
 	}
 	
-	# ペアを入れ替えてJaccard類似度を登録
-	List::Util::pairmap {$LLCS_Jaccard_similarity[$a]->{$_} = $b} %{$LLCS_Jaccard_similarity[$_]} foreach 1..$read_id;
-	
-	# エッジの重みを修正
-	@{$edge_list[$_]}{keys(%{$edge_list[$_]})} = List::Util::pairmap {$LLCS_Jaccard_similarity[$_]->{$a} * $b / $num_minimizers} %{$edge_list[$_]} foreach 1..$read_id;
+	# ペアを入れ替えてエッジを登録
+	map {$edge_list[$_->[0]] .= $_->[1]} List::Util::pairmap {[$a, pack("Nc", $_, $b)]} List::Util::pairgrep {$a > $_} unpack("(Nc)*", $edge_list[$_]) foreach 1..$read_id;
 	print STDERR "completed\n";
 	
 	### excess modularity density (Qx) に基づくリードのクラスタリング ###
@@ -723,8 +768,11 @@ sub body {
 		
 		# リードキューからリードIDを取得して処理
 		while (my $read_id = shift(@read_queue)) {
+			# 変数を宣言
+			my %edges = unpack("(Nc)*", $edge_list[$read_id]);
+			
 			# エッジリストに登録されている各リードのうちメンバーに登録されているものについてメンバーから削除するとともにリードキューに追加してシーケンス方向を決定
-			delete($members{$_}) and push(@read_queue, $_) and vec($seq_ori, $_ + 64, 1) = vec($seq_ori, $read_id + 64, 1) ^ ($edge_list[$read_id]->{$_} < 0) foreach keys(%{$edge_list[$read_id]});
+			delete($members{$_}) and push(@read_queue, $_) and vec($seq_ori, $_ + 64, 1) = vec($seq_ori, $read_id + 64, 1) ^ ($edges{$_} < 0) foreach keys(%edges);
 		}
 	}
 	print STDERR "completed\n";
@@ -771,7 +819,7 @@ sub calc_LLCS_Jaccard_similarities {
 	my $num_query_blocks = ($query_len >> 6) + (($query_len & 0x3F) > 0);
 	
 	# 変数を宣言
-	my @LLCS_Jaccard_similarity = ();
+	my @LLCS_Jaccard_similarities = ();
 	my @query_matrix = ([], [], [], []);
 	my @query_base = ();
 	my $mask = 0xFFFFFFFFFFFFFFFF;
@@ -842,7 +890,7 @@ sub calc_LLCS_Jaccard_similarities {
 		);
 		
 		# ストランド特異性フラグが立っている場合は順鎖に対するLLCSに基づくJaccard類似度を算出して以下の処理をスキップ
-		push(@LLCS_Jaccard_similarity, $for_llcs / ($query_len + $read_len - $for_llcs)) and next if $strand_speicificity;
+		push(@LLCS_Jaccard_similarities, $for_llcs / ($query_len + $read_len - $for_llcs)) and next if $strand_speicificity;
 		
 		# リードシーケンスを相補的な塩基に変換
 		$_ = ~$_ foreach @{$read_seq};
@@ -881,11 +929,11 @@ sub calc_LLCS_Jaccard_similarities {
 		);
 		
 		# LLCSに基づくJaccard類似度を算出 (逆鎖に対するLLCSが順鎖に対するLLCSより大きい場合は負値にする)
-		push(@LLCS_Jaccard_similarity, $for_llcs >= $rev_llcs ? $for_llcs / ($query_len + $read_len - $for_llcs) : -$rev_llcs / ($query_len + $read_len - $rev_llcs));
+		push(@LLCS_Jaccard_similarities, $for_llcs >= $rev_llcs ? $for_llcs / ($query_len + $read_len - $for_llcs) : -$rev_llcs / ($query_len + $read_len - $rev_llcs));
 	}
 	
 	# LLCSに基づくJaccard類似度を返す
-	return(@LLCS_Jaccard_similarity);
+	return(@LLCS_Jaccard_similarities);
 }
 
 # 密度を算出 classify::calc_density(内部エッジの重みの総和, ノード数)
@@ -924,7 +972,7 @@ sub create_sequence_clusters {
 	my $num_reads = @{$edge_list} - 1;
 	
 	# 変数を宣言
-	my @node_degree = map {List::Util::sum0(map {abs($_)} values(%{$_}))} @{$edge_list};
+	my @node_degree = map {List::Util::sum0(map {abs($_ / 127)} unpack("(x4c)*", $_))} @{$edge_list};
 	my @sum_internal_edges = (0) x @{$edge_list};
 	my @num_nodes = (1) x @{$edge_list};
 	my @cluster_degree = @node_degree;
@@ -951,6 +999,9 @@ sub create_sequence_clusters {
 		
 		# 各ノードについて処理
 		foreach my $node (@node_queue) {
+			# エッジリストをデシリアライズ
+			my %edges = unpack("(Nc)*", $edge_list->[$node]);
+			
 			# 所属クラスターを取得
 			my $cluster = $cluster_assignment[$node];
 			
@@ -964,7 +1015,7 @@ sub create_sequence_clusters {
 			$sum_linked_edges{$new_cluster} = 0 if defined($new_cluster);
 			
 			# 隣接クラスターに対するエッジの重みの総和を算出
-			$sum_linked_edges{$cluster_assignment[$_]} += 2 * abs($edge_list->[$node]->{$_}) foreach keys(%{$edge_list->[$node]});
+			$sum_linked_edges{$cluster_assignment[$_]} += 2 * abs($edges{$_} / 127) foreach keys(%edges);
 			
 			# 現在クラスターから転出した場合のQx変化量を算出
 			my $basal_Qx_change = &calc_partial_Qx($sum_internal_edges[$cluster] - $sum_linked_edges{$cluster}, $num_nodes[$cluster] - 1, $cluster_degree[$cluster] - $node_degree[$node], $graph_degree, $graph_density) - &calc_partial_Qx($sum_internal_edges[$cluster], $num_nodes[$cluster], $cluster_degree[$cluster], $graph_degree, $graph_density);
