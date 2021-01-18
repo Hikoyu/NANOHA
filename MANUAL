@@ -1,5 +1,5 @@
 ==========================================
-Abridged User's Manual of NANOHA ver.1.3.0
+Abridged User's Manual of NANOHA ver.1.3.1
 ==========================================
 
 Supported Operating System
@@ -83,7 +83,7 @@ $ nanoha.pl <command> [options] [input] [>output] [2>log]
 If you omit the command, NANOHA outputs its version and available commands as below:
 ```
 $ nanoha.pl 
-nanoha.pl ver.1.3.0
+nanoha.pl ver.1.3.1
 
 Functions:
   NANOHA is Network-based Assortment of Noisy On-target reads for High-accuracy Alignments.

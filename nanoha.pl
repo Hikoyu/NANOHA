@@ -11,7 +11,7 @@ use threads;
 # ソフトウェアを定義
 ### 編集範囲 開始 ###
 my $software = "nanoha.pl";	# ソフトウェアの名前
-my $version = "ver.1.3.0";	# ソフトウェアのバージョン
+my $version = "ver.1.3.1";	# ソフトウェアのバージョン
 my $note = "NANOHA is Network-based Assortment of Noisy On-target reads for High-accuracy Alignments.\n  This software assorts on-target PacBio/Nanopore reads such as target amplicon sequences.";	# ソフトウェアの説明
 my $usage = "<required items> [optional items]";	# ソフトウェアの使用法 (コマンド非使用ソフトウェアの時に有効)
 ### 編集範囲 終了 ###
@@ -240,7 +240,7 @@ sub body {
 	my $seq_index : shared;
 	
 	# プロセスIDとプログラム開始時刻をファイルヘッダーとしてシーケンスインデックスに登録
-	$seq_index = pack("NN", 0, 0);
+	$seq_index = pack("NN", $$, $^T);
 	
 	# Nanoha Sequence Read (NSR) ファイルを作成
 	open(NSR, ">", "$opt{o}.nsr") or &exception::error("failed to make file: $opt{o}.nsr");
